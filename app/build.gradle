@@ -1,0 +1,34 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'dev.ultrawide.camerahook'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'dev.ultrawide.camerahook'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Ditandatangani dengan debug key supaya APK langsung bisa diinstal.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // API Xposed hanya dipakai saat compile; di runtime disediakan oleh LSPosed.
+    compileOnly project(':xposed-stub')
+}
