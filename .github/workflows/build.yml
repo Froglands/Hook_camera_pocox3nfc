@@ -2,7 +2,6 @@ name: Build APK
 
 on:
   push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -16,9 +15,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      # Android SDK sudah terpasang di runner GitHub (ANDROID_HOME), tidak perlu setup-android.
+      - name: Terima lisensi Android SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
-      - name: Build release APK
+      - name: Build APK
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
