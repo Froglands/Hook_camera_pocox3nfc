@@ -19,6 +19,126 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      # Membuat ulang modul xposed-stub (API Xposed untuk compile saja) supaya
+      # build tidak bergantung pada folder xposed-stub yang ada di repo.
+      - name: Buat xposed-stub
+        run: |
+          mkdir -p xposed-stub
+          cat > xposed-stub/build.gradle <<'EOF_STUB'
+          plugins {
+              id 'java-library'
+          }
+
+          java {
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+          }
+          EOF_STUB
+          mkdir -p xposed-stub/src/main/java/de/robv/android/xposed
+          cat > xposed-stub/src/main/java/de/robv/android/xposed/IXposedHookLoadPackage.java <<'EOF_STUB'
+          package de.robv.android.xposed;
+
+          import de.robv.android.xposed.callbacks.XC_LoadPackage;
+
+          /** Stub compile-only dari Xposed API (implementasi asli disediakan LSPosed saat runtime). */
+          public interface IXposedHookLoadPackage {
+              void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable;
+          }
+          EOF_STUB
+          mkdir -p xposed-stub/src/main/java/de/robv/android/xposed
+          cat > xposed-stub/src/main/java/de/robv/android/xposed/XC_MethodHook.java <<'EOF_STUB'
+          package de.robv.android.xposed;
+
+          import java.lang.reflect.Member;
+
+          /** Stub compile-only dari Xposed API. */
+          public abstract class XC_MethodHook {
+
+              public XC_MethodHook() {
+              }
+
+              public XC_MethodHook(int priority) {
+              }
+
+              protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+              }
+
+              protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+              }
+
+              public static final class MethodHookParam {
+                  public Member method;
+                  public Object thisObject;
+                  public Object[] args;
+
+                  public Object getResult() {
+                      return null;
+                  }
+
+                  public void setResult(Object result) {
+                  }
+
+                  public Throwable getThrowable() {
+                      return null;
+                  }
+
+                  public boolean hasThrowable() {
+                      return false;
+                  }
+
+                  public void setThrowable(Throwable throwable) {
+                  }
+
+                  public Object getResultOrThrowable() throws Throwable {
+                      return null;
+                  }
+              }
+
+              public class Unhook {
+                  public void unhook() {
+                  }
+              }
+          }
+          EOF_STUB
+          mkdir -p xposed-stub/src/main/java/de/robv/android/xposed
+          cat > xposed-stub/src/main/java/de/robv/android/xposed/XposedBridge.java <<'EOF_STUB'
+          package de.robv.android.xposed;
+
+          import java.util.Set;
+
+          /** Stub compile-only dari Xposed API. */
+          public final class XposedBridge {
+
+              private XposedBridge() {
+              }
+
+              public static synchronized void log(String text) {
+              }
+
+              public static synchronized void log(Throwable t) {
+              }
+
+              public static Set<XC_MethodHook.Unhook> hookAllMethods(Class<?> hookClass, String methodName,
+                                                                    XC_MethodHook callback) {
+                  return null;
+              }
+          }
+          EOF_STUB
+          mkdir -p xposed-stub/src/main/java/de/robv/android/xposed/callbacks
+          cat > xposed-stub/src/main/java/de/robv/android/xposed/callbacks/XC_LoadPackage.java <<'EOF_STUB'
+          package de.robv.android.xposed.callbacks;
+
+          /** Stub compile-only dari Xposed API. */
+          public abstract class XC_LoadPackage {
+              public static final class LoadPackageParam {
+                  public String packageName;
+                  public String processName;
+                  public ClassLoader classLoader;
+                  public boolean isFirstApplication;
+              }
+          }
+          EOF_STUB
+
       - name: Terima lisensi Android SDK
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
