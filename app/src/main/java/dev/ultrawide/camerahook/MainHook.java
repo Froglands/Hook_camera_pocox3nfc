@@ -8,9 +8,8 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * Modul LSPosed: saat com.android.camera membuka kamera belakang utama,
- * alihkan ke kamera ultrawide (0.6x). Karena kamera utama tidak pernah dibuka,
- * aplikasi kamera tidak freeze lagi.
+ * Modul LSPosed: saat com.android.camera meminta kamera belakang utama (ID "0" yang tidak ada
+ * karena kamera utama rusak), permintaan dialihkan ke kamera ultrawide (0.6x).
  *
  * Pengalihan dilakukan di level framework Camera2 (CameraManager), jadi tidak
  * bergantung pada nama class/method internal aplikasi kamera yang berbeda
@@ -22,19 +21,24 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "[UltrawideCam] ";
 
     /**
-     * Isi manual jika deteksi otomatis salah. Contoh: FORCED_ULTRAWIDE_ID = "2".
-     * Kosong ("") = deteksi otomatis. Lihat log LSPosed untuk daftar ID kamera.
+     * Isi manual jika deteksi otomatis salah. Contoh: FORCED_ULTRAWIDE_ID = "21".
+     * Kosong ("") = deteksi otomatis (kamera belakang dengan FOV terlebar).
      */
     private static final String FORCED_ULTRAWIDE_ID = "";
-    /** Kosong = pakai ID kamera belakang terendah (biasanya "0"). */
+    /**
+     * Opsional: ID kamera yang ADA di sistem tetapi ingin dipaksa dialihkan ke ultrawide.
+     * Kosong ("") = hanya ID yang tidak ada di sistem (mis. "0") yang dialihkan.
+     */
     private static final String FORCED_MAIN_ID = "";
+
+    private static final int MAX_REDIRECT_LOGS = 30;
 
     private static final Object LOCK = new Object();
     private static final ThreadLocal<Boolean> RESOLVING = new ThreadLocal<>();
 
     private static volatile boolean resolved;
-    private static volatile String mainId;
-    private static volatile String ultraId;
+    private static volatile UltrawideResolver.Result result;
+    private static volatile int redirectLogs;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -51,7 +55,7 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** Ganti ID kamera utama dengan ID ultrawide saat kamera dibuka. */
+    /** Ganti ID kamera utama (yang tidak ada/rusak) dengan ID ultrawide saat kamera dibuka. */
     private static final XC_MethodHook OPEN_HOOK = new XC_MethodHook() {
         @Override
         protected void beforeHookedMethod(MethodHookParam param) {
@@ -60,12 +64,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (!(param.args[0] instanceof String)) return;
                 if (!(param.thisObject instanceof CameraManager)) return;
 
-                resolve((CameraManager) param.thisObject);
-                String main = mainId;
-                String ultra = ultraId;
-                if (ultra != null && param.args[0].equals(main)) {
-                    log("openCamera " + main + " -> " + ultra);
-                    param.args[0] = ultra;
+                String target = targetFor((CameraManager) param.thisObject, (String) param.args[0]);
+                if (target != null) {
+                    logRedirect("openCamera " + param.args[0] + " -> " + target);
+                    param.args[0] = target;
                 }
             } catch (Throwable t) {
                 XposedBridge.log(t);
@@ -74,8 +76,9 @@ public class MainHook implements IXposedHookLoadPackage {
     };
 
     /**
-     * Saat aplikasi menanyakan spesifikasi kamera utama, berikan spesifikasi ultrawide
-     * supaya ukuran preview/foto yang dipilih aplikasi cocok dengan kamera yang benar-benar dibuka.
+     * Saat aplikasi menanyakan spesifikasi kamera utama (ID "0" yang tidak ada, sehingga biasanya
+     * melempar IllegalArgumentException), berikan spesifikasi ultrawide supaya aplikasi
+     * bisa lanjut dan memilih ukuran preview/foto yang cocok dengan kamera yang dibuka.
      */
     private static final XC_MethodHook CHARACTERISTICS_HOOK = new XC_MethodHook() {
         @Override
@@ -87,17 +90,23 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (!(param.thisObject instanceof CameraManager)) return;
 
                 CameraManager mgr = (CameraManager) param.thisObject;
-                resolve(mgr);
-                String main = mainId;
-                String ultra = ultraId;
-                if (ultra != null && param.args[0].equals(main)) {
-                    param.setResult(mgr.getCameraCharacteristics(ultra));
+                String target = targetFor(mgr, (String) param.args[0]);
+                if (target != null) {
+                    logRedirect("getCameraCharacteristics " + param.args[0] + " -> " + target);
+                    param.setResult(mgr.getCameraCharacteristics(target));
                 }
             } catch (Throwable t) {
                 XposedBridge.log(t);
             }
         }
     };
+
+    /** ID tujuan jika permintaan ke {@code requested} harus dialihkan, selain itu null. */
+    private static String targetFor(CameraManager mgr, String requested) {
+        resolve(mgr);
+        UltrawideResolver.Result r = result;
+        return r == null ? null : r.redirect(requested);
+    }
 
     private static void resolve(CameraManager mgr) {
         if (resolved) return;
@@ -109,8 +118,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         UltrawideResolver.resolve(mgr, FORCED_MAIN_ID, FORCED_ULTRAWIDE_ID);
                 for (String line : r.report) log(line);
                 if (r.isFinal) {
-                    mainId = r.mainId;
-                    ultraId = r.ultraId;
+                    result = r;
                     resolved = true;
                 }
             } catch (Throwable t) {
@@ -118,6 +126,13 @@ public class MainHook implements IXposedHookLoadPackage {
             } finally {
                 RESOLVING.remove();
             }
+        }
+    }
+
+    private static void logRedirect(String msg) {
+        if (redirectLogs < MAX_REDIRECT_LOGS) {
+            redirectLogs++;
+            log(msg);
         }
     }
 

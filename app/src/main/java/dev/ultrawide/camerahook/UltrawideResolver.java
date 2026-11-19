@@ -6,34 +6,49 @@ import android.hardware.camera2.CameraManager;
 import android.util.SizeF;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
- * Menentukan ID kamera belakang utama dan ID kamera ultrawide
- * dari data CameraCharacteristics (tanpa bergantung pada nama class
- * aplikasi kamera yang di-obfuscate).
+ * Menentukan kamera ultrawide dari data CameraCharacteristics dan memutuskan
+ * ID kamera mana yang harus dialihkan ke kamera tersebut.
+ *
+ * Kasus utama (Poco X3 NFC dengan kamera utama rusak): aplikasi kamera selalu meminta
+ * kamera belakang virtual "0", padahal ID itu tidak ada di sistem (daftar hanya 1, 21, 22, 25, 101).
+ * Permintaan ke ID yang tidak ada itu dialihkan ke kamera belakang terlebar (ultrawide).
  */
 final class UltrawideResolver {
 
-    /** Kamera ultrawide dianggap valid jika FOV-nya minimal segini derajat lebih lebar dari kamera utama. */
-    private static final double MIN_FOV_GAIN_DEG = 15.0;
-
     static final class Result {
-        /** ID kamera belakang utama (yang akan dialihkan). */
-        final String mainId;
-        /** ID kamera ultrawide; null jika tidak ditemukan. */
+        /** ID kamera ultrawide tujuan pengalihan; null jika tidak ada kamera belakang. */
         final String ultraId;
-        /** false = hasil belum final (mis. daftar kamera masih kosong), coba lagi nanti. */
+        /** Semua ID kamera yang benar-benar ada di sistem. */
+        final Set<String> knownIds;
+        /** ID yang dipaksa dialihkan walau ada di sistem (opsional). */
+        final String forcedMain;
+        /** false = hasil belum final (daftar kamera masih kosong), coba lagi nanti. */
         final boolean isFinal;
         /** Baris laporan untuk log. */
         final List<String> report;
 
-        Result(String mainId, String ultraId, boolean isFinal, List<String> report) {
-            this.mainId = mainId;
+        Result(String ultraId, Set<String> knownIds, String forcedMain, boolean isFinal,
+               List<String> report) {
             this.ultraId = ultraId;
+            this.knownIds = knownIds;
+            this.forcedMain = forcedMain;
             this.isFinal = isFinal;
             this.report = report;
+        }
+
+        /** Mengembalikan ID tujuan jika permintaan ke {@code requested} harus dialihkan, selain itu null. */
+        String redirect(String requested) {
+            if (ultraId == null || requested == null || requested.equals(ultraId)) return null;
+            if (!isEmpty(forcedMain) && requested.equals(forcedMain)) return ultraId;
+            if (knownIds.contains(requested)) return null;
+            if (isLegacyBackId(requested)) return ultraId;
+            return null;
         }
     }
 
@@ -53,14 +68,16 @@ final class UltrawideResolver {
     static Result resolve(CameraManager mgr, String forcedMain, String forcedUltra)
             throws CameraAccessException {
         List<String> report = new ArrayList<>();
+        Set<String> known = new HashSet<>();
         String[] ids = mgr.getCameraIdList();
         if (ids == null || ids.length == 0) {
             report.add("daftar kamera kosong, akan dicoba lagi");
-            return new Result(null, null, false, report);
+            return new Result(null, known, forcedMain, false, report);
         }
 
         List<Cam> backs = new ArrayList<>();
         for (String id : ids) {
+            known.add(id);
             CameraCharacteristics c = mgr.getCameraCharacteristics(id);
             Integer facing = c.get(CameraCharacteristics.LENS_FACING);
             Double fov = horizontalFov(c);
@@ -72,37 +89,28 @@ final class UltrawideResolver {
             }
         }
 
-        if (backs.isEmpty() && isEmpty(forcedMain)) {
-            report.add("tidak ada kamera belakang yang terlihat");
-            return new Result(null, null, true, report);
-        }
-
-        Cam main;
-        if (!isEmpty(forcedMain)) {
-            main = find(backs, forcedMain);
-            if (main == null) main = new Cam(forcedMain, null);
-        } else {
-            main = lowestId(backs);
-        }
-
         Cam ultra = null;
         if (!isEmpty(forcedUltra)) {
             ultra = find(backs, forcedUltra);
             if (ultra == null) ultra = new Cam(forcedUltra, null);
         } else {
+            // Kamera belakang dengan field of view terlebar = ultrawide (0.6x).
             for (Cam c : backs) {
-                if (c.id.equals(main.id) || c.fov == null) continue;
-                if (main.fov != null && c.fov < main.fov + MIN_FOV_GAIN_DEG) continue;
-                if (ultra == null || c.fov > ultra.fov) ultra = c;
+                if (ultra == null) {
+                    ultra = c;
+                } else if (c.fov != null && (ultra.fov == null || c.fov > ultra.fov)) {
+                    ultra = c;
+                }
             }
         }
 
-        if (ultra == null || ultra.id.equals(main.id)) {
-            report.add("kamera ultrawide terpisah tidak ditemukan (utama=" + main.id + ")");
-            return new Result(main.id, null, true, report);
+        if (ultra == null) {
+            report.add("tidak ada kamera belakang yang terlihat");
+            return new Result(null, known, forcedMain, true, report);
         }
-        report.add("dipilih: utama=" + main.id + " -> ultrawide=" + ultra.id);
-        return new Result(main.id, ultra.id, true, report);
+        report.add("ultrawide dipilih: id=" + ultra.id
+                + "; permintaan ke id yang tidak ada (mis. 0) akan dialihkan ke sini");
+        return new Result(ultra.id, known, forcedMain, true, report);
     }
 
     /** Field of view horizontal (derajat) dari panjang fokus terpendek dan lebar sensor. */
@@ -120,22 +128,13 @@ final class UltrawideResolver {
         return Math.toDegrees(2.0 * Math.atan(size.getWidth() / (2.0 * min)));
     }
 
-    private static Cam lowestId(List<Cam> cams) {
-        Cam best = null;
-        for (Cam c : cams) {
-            if (best == null || order(c.id) < order(best.id)
-                    || (order(c.id) == order(best.id) && c.id.compareTo(best.id) < 0)) {
-                best = c;
-            }
-        }
-        return best;
-    }
-
-    private static int order(String id) {
+    /** ID kamera belakang gaya lama: angka 0..99 (kamera depan MIUI memakai 1 dan 100+). */
+    private static boolean isLegacyBackId(String id) {
         try {
-            return Integer.parseInt(id);
+            int n = Integer.parseInt(id);
+            return n >= 0 && n < 100;
         } catch (NumberFormatException e) {
-            return Integer.MAX_VALUE;
+            return false;
         }
     }
 
